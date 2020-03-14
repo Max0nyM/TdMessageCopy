@@ -10,14 +10,20 @@ using TdApi = Telegram.Td.Api;
 
 using System;
 using System.Threading;
+using System.Data.Entity;
+using Telegram.Td.Api;
+using System.Configuration;
+using System.Linq;
 
 namespace TdMessageCopy
 {
     /// <summary>
-    /// Example class for TDLib usage from C#.
+    /// MessageCopy class for TDLib usage from C#.
     /// </summary>
-    class Example
+    partial class MessageCopy
     {
+        private static AppConfig appConfig = null;
+        private static MobileContext db = null;
         private static Td.Client _client = null;
         private readonly static Td.ClientResultHandler _defaultHandler = new DefaultHandler();
 
@@ -30,6 +36,31 @@ namespace TdMessageCopy
         private static readonly string _newLine = Environment.NewLine;
         private static readonly string _commandsLine = "Enter command (gc <chatId> - GetChat, me - GetMe, sm <chatId> <message> - SendMessage, lo - LogOut, r - Restart, q - Quit): ";
         private static volatile string _currentPrompt = null;
+
+
+        public class AppConfig
+        {           
+            public int apiID { get; set; }
+            public string apiHash { get; set; }
+            public Int64[] chatIds { get; set; }
+
+            public string targetChatId { get; set; }
+
+            public AppConfig()
+            {
+                var reader = new AppSettingsReader();
+                apiID = (int)reader.GetValue("ApiId", typeof(int));
+                apiHash = (string)reader.GetValue("ApiHash", typeof(string));
+                string chatString = (string)reader.GetValue("ChatId", typeof(string));
+                chatIds = chatString.Split(',').Select(s => Int64.Parse(s)).ToArray();
+                targetChatId = (string)reader.GetValue("TargetChatId", typeof(string));
+
+            }
+
+        }
+
+              
+
 
         private static Td.Client CreateTdClient()
         {
@@ -76,8 +107,8 @@ namespace TdMessageCopy
                 parameters.DatabaseDirectory = "tdlib";
                 parameters.UseMessageDatabase = true;
                 parameters.UseSecretChats = true;
-                parameters.ApiId = 1060390;
-                parameters.ApiHash = "924e9db1c1b0633d5c84d33522ec2005";
+                parameters.ApiId = appConfig.apiID;
+                parameters.ApiHash = appConfig.apiHash;
                 parameters.SystemLanguageCode = "en";
                 parameters.DeviceModel = "Desktop";
                 parameters.SystemVersion = "Unknown";
@@ -216,20 +247,27 @@ namespace TdMessageCopy
 
 
 
-        private static void sendMessage(long chatId, TdApi.MessagePhoto _content)
+        private static void sendMessage(long chatId, TdApi.MessagePhoto message)
         {
             // initialize reply markup just for testing
             TdApi.InlineKeyboardButton[] row = { new TdApi.InlineKeyboardButton("https://telegram.org?1", new TdApi.InlineKeyboardButtonTypeUrl()), new TdApi.InlineKeyboardButton("https://telegram.org?2", new TdApi.InlineKeyboardButtonTypeUrl()), new TdApi.InlineKeyboardButton("https://telegram.org?3", new TdApi.InlineKeyboardButtonTypeUrl()) };
             TdApi.ReplyMarkup replyMarkup = new TdApi.ReplyMarkupInlineKeyboard(new TdApi.InlineKeyboardButton[][] { row, row, row });
 
-          //  TdApi.InputMessageContent content = new TdApi.InputMessagePhoto(_content.Photo,)
-          //  _client.Send(new TdApi.SendMessage(chatId, 0, null, replyMarkup, content), _defaultHandler);
+            TdApi.InputFileRemote inputFile = new TdApi.InputFileRemote(message.Photo.Sizes[message.Photo.Sizes.Length-1].Photo.Remote.Id);
+            TdApi.InputMessageContent content = new TdApi.InputMessagePhoto(inputFile, null, null, message.Photo.Sizes[0].Width, message.Photo.Sizes[0].Height, message.Caption, 0);
+
+            _client.Send(new TdApi.SendMessage(chatId, 0, null, replyMarkup, content), _defaultHandler);
 
 
         }
 
         static void Main()
         {
+            
+
+            appConfig = new AppConfig();
+           
+            db = new MobileContext();
             // disable TDLib log
             Td.Client.Execute(new TdApi.SetLogVerbosityLevel(0));
             if (Td.Client.Execute(new TdApi.SetLogStream(new TdApi.LogStreamFile("tdlib.log", 1 << 27))) is TdApi.Error)
@@ -242,6 +280,8 @@ namespace TdMessageCopy
 
             // test Client.Execute
             _defaultHandler.OnResult(Td.Client.Execute(new TdApi.GetTextEntities("@telegram /test_command https://telegram.org telegram.me @gif @test")));
+
+            var exitTime = DateTime.Now.AddMinutes(5);
 
             // main loop
             while (!_quiting)
@@ -281,31 +321,40 @@ namespace TdMessageCopy
                      //  Print("Unsupported update: " + @object);
                     if (@object is TdApi.UpdateChatLastMessage)
                     {
-                        ///RDV - -1001075101206
+                        ///RDV - -1001408447562
                         ///HIDE -1001352498778
+                        ///my -1001260330650
                         TdApi.Message lastMessage = (@object as TdApi.UpdateChatLastMessage).LastMessage;
-                        if (lastMessage.ChatId == -1001352498778)
+                        if (lastMessage != null && appConfig.chatIds.Contains(lastMessage.ChatId))
                         {
-                            Print("Unsupported update: " + @object);
-                           if (lastMessage.Content is TdApi.MessageText)
-                            { 
-                                sendMessage(GetChatId("350715255"), (lastMessage.Content as TdApi.MessageText).Text.Text); 
-                            }
-
-                            switch (lastMessage.Content)
+                            var saveMessage = new SaveMessage();
+                            saveMessage.messageID = lastMessage.Id;
+                            if (db.SaveMessage.Find(lastMessage.Id) == null)
                             {
-                                case TdApi.MessageText message: sendMessage(GetChatId("350715255"), message.Text.Text);
-                                    break;
-                                case TdApi.MessagePhoto photo:
-                               //     sendMessage(GetChatId("350715255"), photo);
-                                    break;
-                                default:
-                                    break;
+                                db.SaveMessage.Add(saveMessage);
+                                db.SaveChanges();
+                                sendMessage(lastMessage);
+                            //    Print(lastMessage.ToString());
                             }
 
 
                         }
                     }
+                }
+            }
+
+            private static void sendMessage(Message lastMessage)
+            {
+                switch (lastMessage.Content)
+                {
+                    case TdApi.MessageText message:
+                        MessageCopy.sendMessage(GetChatId(appConfig.targetChatId), message.Text.Text);
+                        break;
+                    case TdApi.MessagePhoto photo:
+                        MessageCopy.sendMessage(GetChatId(appConfig.targetChatId), photo);
+                        break;
+                    default:
+                        break;
                 }
             }
         }
